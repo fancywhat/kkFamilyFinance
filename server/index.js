@@ -283,6 +283,21 @@ function parseCanonicalText(text) {
   return null
 }
 
+function extractTextFromRequestBody(body) {
+  if (!body) return ''
+  if (typeof body === 'string') return body
+  if (typeof body !== 'object') return ''
+  if (typeof body.text === 'string') return body.text
+  if (typeof body.canonicalText === 'string') return body.canonicalText
+  if (typeof body.message === 'string') return body.message
+  if (body.data && typeof body.data === 'object') {
+    if (typeof body.data.text === 'string') return body.data.text
+    if (typeof body.data.canonicalText === 'string') return body.data.canonicalText
+    if (typeof body.data.message === 'string') return body.data.message
+  }
+  return ''
+}
+
 async function resolveCategoryByName({ name, type }) {
   const categoryName = String(name || '').trim()
   if (!categoryName) return null
@@ -636,7 +651,7 @@ app.post('/api/ingest', async (req, res) => {
   if (!quickAddConfig) await loadQuickAddConfig()
   await ensureDefaultCategories()
 
-  const { text } = req.body
+  const text = extractTextFromRequestBody(req.body)
   const parsed = parseCanonicalText(text)
   if (!parsed) {
     return res.status(400).json({
