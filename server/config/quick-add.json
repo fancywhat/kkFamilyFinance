@@ -1,0 +1,25 @@
+{
+  "defaultPerson": null,
+  "personAliases": {
+    "kk": "kk",
+    "k": "kk",
+    "可可": "kk",
+    "y": "y",
+    "yy": "y",
+    "宇": "y"
+  },
+  "autoCreateCategory": true,
+  "categoryKeywordRules": [
+    { "type": "expense", "keywords": ["早餐", "午饭", "晚饭", "夜宵", "饭", "餐饮", "手抓饼"], "category": "餐饮" },
+    { "type": "expense", "keywords": ["打车", "地铁", "公交", "交通"], "category": "交通" },
+    { "type": "expense", "keywords": ["房租", "水电", "物业", "居住"], "category": "居住" },
+    { "type": "expense", "keywords": ["医院", "挂号", "药", "医疗"], "category": "医疗" },
+    { "type": "expense", "keywords": ["购物"], "category": "购物" },
+    { "type": "expense", "keywords": ["电影", "游戏", "娱乐"], "category": "娱乐" },
+    { "type": "income", "keywords": ["工资"], "category": "工资" },
+    { "type": "income", "keywords": ["奖金"], "category": "奖金" },
+    { "type": "income", "keywords": ["理财", "收益", "分红"], "category": "理财收益" },
+    { "type": "income", "keywords": ["兼职"], "category": "兼职" }
+  ]
+}
+

@@ -1,0 +1,65 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Transaction {
+  id        Int      @id @default(autoincrement())
+  amount    Float
+  type      String
+  paymentMethod String @default("cash")
+  date      DateTime
+  note      String?
+  person    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category   Category  @relation(fields: [categoryId], references: [id])
+  categoryId Int
+
+  debt   Debt? @relation(fields: [debtId], references: [id])
+  debtId Int?
+}
+
+model Debt {
+  id        Int      @id @default(autoincrement())
+  name      String
+  lender    String?
+  person    String?
+  type      String
+  principal Float?
+  balance   Float
+  apr       Float?
+  startDate DateTime?
+  dueDay    Int?
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  records DebtRecord[]
+}
+
+model DebtRecord {
+  id        Int      @id @default(autoincrement())
+  type      String
+  amount    Float
+  date      DateTime
+  note      String?
+  createdAt DateTime @default(now())
+
+  debt   Debt @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  debtId Int
+}
+
+model Category {
+  id   Int    @id @default(autoincrement())
+  name String
+  type String
+
+  transactions Transaction[]
+  @@unique([name, type])
+}

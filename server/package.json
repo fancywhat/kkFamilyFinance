@@ -1,0 +1,26 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node index.js",
+    "start": "node index.js",
+    "prisma:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "test": "echo \"暂无测试\" && exit 0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@prisma/client": "^5.12.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "prisma": "^5.12.1"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2"
+  }
+}
