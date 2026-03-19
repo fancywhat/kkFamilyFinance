@@ -37,7 +37,7 @@
       <a-layout-header class="bg-white px-4 flex items-center justify-between">
         <div class="font-medium">轻量级家庭财务管理系统</div>
         <div class="flex items-center gap-3">
-          <a-tag color="blue">记账入口：OpenClaw</a-tag>
+          <!-- <a-tag color="blue">记账入口：OpenClaw</a-tag> -->
         </div>
       </a-layout-header>
       <a-layout-content style="margin: 16px">
