@@ -54,6 +54,7 @@
             <span class="text-gray-700">{{ record.debt?.name || '-' }}</span>
           </template>
           <template v-else-if="column.dataIndex === 'action'">
+            <a class="mr-3 text-blue-600" @click="编辑(record)">编辑</a>
             <a-popconfirm
               title="确定要删除这条记录吗？"
               ok-text="确定"
@@ -67,17 +68,27 @@
       </a-table>
     </a-card>
 
-    <a-modal v-model:open="modalOpen" title="新增交易" ok-text="保存" cancel-text="取消" @ok="提交">
+    <a-modal
+      v-model:open="modalOpen"
+      :title="modalTitle"
+      ok-text="保存"
+      cancel-text="取消"
+      @ok="提交"
+    >
       <a-form layout="vertical">
         <a-form-item label="交易类型">
-          <a-radio-group v-model:value="form.type" button-style="solid">
+          <a-radio-group v-model:value="form.type" button-style="solid" :disabled="仅可编辑备注日期成员">
             <a-radio-button value="expense">支出</a-radio-button>
             <a-radio-button value="income">收入</a-radio-button>
           </a-radio-group>
         </a-form-item>
 
         <a-form-item label="分类">
-          <a-select v-model:value="form.categoryId" placeholder="请选择分类">
+          <a-select
+            v-model:value="form.categoryId"
+            placeholder="请选择分类"
+            :disabled="仅可编辑备注日期成员"
+          >
             <a-select-option v-for="c in 可选分类" :key="c.id" :value="c.id">
               {{ c.name }}
             </a-select-option>
@@ -85,7 +96,7 @@
         </a-form-item>
 
         <a-form-item label="支付方式">
-          <a-select v-model:value="form.paymentMethod">
+          <a-select v-model:value="form.paymentMethod" :disabled="仅可编辑备注日期成员">
             <a-select-option value="cash">现金</a-select-option>
             <a-select-option value="bank">银行卡</a-select-option>
             <a-select-option value="credit_card">信用卡消费</a-select-option>
@@ -94,7 +105,11 @@
         </a-form-item>
 
         <a-form-item v-if="需要选择信用卡" label="信用卡账户">
-          <a-select v-model:value="form.debtId" placeholder="请选择信用卡">
+          <a-select
+            v-model:value="form.debtId"
+            placeholder="请选择信用卡"
+            :disabled="仅可编辑备注日期成员"
+          >
             <a-select-option v-for="d in debtsStore.信用卡列表" :key="d.id" :value="d.id">
               {{ d.name }}
             </a-select-option>
@@ -102,7 +117,12 @@
         </a-form-item>
 
         <a-form-item label="金额">
-          <a-input-number v-model:value="form.amount" :min="0" style="width: 100%" />
+          <a-input-number
+            v-model:value="form.amount"
+            :min="0"
+            style="width: 100%"
+            :disabled="仅可编辑备注日期成员"
+          />
         </a-form-item>
 
         <a-form-item label="日期">
@@ -112,6 +132,10 @@
             value-format="YYYY-MM-DD HH:mm:ss"
             show-time
           />
+        </a-form-item>
+
+        <a-form-item label="成员">
+          <a-input v-model:value="form.person" placeholder="例如 kk / y（可选）" />
         </a-form-item>
 
         <a-form-item label="备注">
@@ -128,13 +152,15 @@ import { message } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { useFinanceStore } from '@/stores/finance'
 import { useDebtsStore } from '@/stores/debts'
-import type { 交易类型, 支付方式 } from '@/types/api'
+import type { 交易记录, 交易类型, 支付方式 } from '@/types/api'
 import { formatDateTime } from '@/utils/datetime'
 
 const finance = useFinanceStore()
 const debtsStore = useDebtsStore()
 
 const modalOpen = ref(false)
+const editingId = ref<number | null>(null)
+const editingRecord = ref<交易记录 | null>(null)
 
 const form = reactive<{
   type: 交易类型
@@ -143,6 +169,7 @@ const form = reactive<{
   debtId: number | null
   amount: number | null
   date: string
+  person: string
   note: string
 }>({
   type: 'expense',
@@ -151,6 +178,7 @@ const form = reactive<{
   debtId: null,
   amount: null,
   date: new Date().toISOString().slice(0, 19).replace('T', ' '),
+  person: '',
   note: ''
 })
 
@@ -162,6 +190,16 @@ const 还款分类Id = computed(() => {
 const 需要选择信用卡 = computed(
   () => form.paymentMethod === 'credit_card' || form.paymentMethod === 'credit_repayment'
 )
+const 仅可编辑备注日期成员 = computed(() => {
+  if (!editingRecord.value) return false
+  return (
+    editingRecord.value.paymentMethod === 'credit_card' ||
+    editingRecord.value.paymentMethod === 'credit_repayment' ||
+    Boolean(editingRecord.value.debtId)
+  )
+})
+
+const modalTitle = computed(() => (editingId.value ? '编辑交易' : '新增交易'))
 
 const columns = [
   { title: '日期', dataIndex: 'date', key: 'date' },
@@ -176,7 +214,32 @@ const columns = [
 ]
 
 function 打开弹窗() {
+  editingId.value = null
+  editingRecord.value = null
   modalOpen.value = true
+  form.type = 'expense'
+  form.categoryId = null
+  form.paymentMethod = 'cash'
+  form.debtId = null
+  form.amount = null
+  form.date = new Date().toISOString().slice(0, 19).replace('T', ' ')
+  form.person = ''
+  form.note = ''
+}
+
+function 编辑(record: 交易记录) {
+  editingId.value = record.id
+  editingRecord.value = record
+  modalOpen.value = true
+
+  form.type = record.type
+  form.categoryId = record.categoryId
+  form.paymentMethod = record.paymentMethod
+  form.debtId = record.debtId ?? null
+  form.amount = record.amount
+  form.date = formatDateTime(record.date)
+  form.person = record.person ?? ''
+  form.note = record.note ?? ''
 }
 
 onMounted(async () => {
@@ -184,30 +247,45 @@ onMounted(async () => {
 })
 
 async function 提交() {
-  if (form.paymentMethod === 'credit_repayment' && 还款分类Id.value) {
-    form.categoryId = 还款分类Id.value
-  }
-  if (!form.categoryId) return message.warning('请选择分类')
-  if (!form.amount || form.amount <= 0) return message.warning('请输入正确的金额')
-  if (需要选择信用卡.value && !form.debtId) return message.warning('请选择信用卡账户')
+  if (editingId.value && 仅可编辑备注日期成员.value) {
+    await finance.更新交易(editingId.value, {
+      date: form.date,
+      note: form.note,
+      person: form.person
+    })
+  } else {
+    if (form.paymentMethod === 'credit_repayment' && 还款分类Id.value) {
+      form.categoryId = 还款分类Id.value
+    }
+    if (!form.categoryId) return message.warning('请选择分类')
+    if (!form.amount || form.amount <= 0) return message.warning('请输入正确的金额')
+    if (需要选择信用卡.value && !form.debtId) return message.warning('请选择信用卡账户')
 
-  await finance.新增交易({
-    amount: Number(form.amount),
-    type: form.type,
-    paymentMethod: form.paymentMethod,
-    date: form.date,
-    note: form.note,
-    categoryId: form.categoryId,
-    debtId: 需要选择信用卡.value ? form.debtId : null
-  })
+    const payload = {
+      amount: Number(form.amount),
+      type: form.type,
+      paymentMethod: form.paymentMethod,
+      date: form.date,
+      note: form.note,
+      person: form.person,
+      categoryId: form.categoryId,
+      debtId: 需要选择信用卡.value ? form.debtId : null
+    }
+
+    if (editingId.value) await finance.更新交易(editingId.value, payload)
+    else await finance.新增交易(payload)
+  }
 
   message.success('保存成功')
   modalOpen.value = false
+  editingId.value = null
+  editingRecord.value = null
   form.amount = null
   form.note = ''
   form.categoryId = null
   form.debtId = null
   form.paymentMethod = 'cash'
+  form.person = ''
 }
 
 async function 删除(id: number) {

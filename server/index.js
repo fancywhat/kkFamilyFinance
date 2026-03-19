@@ -528,6 +528,95 @@ app.post('/api/transactions', async (req, res) => {
   }
 })
 
+app.put('/api/transactions/:id', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '参数不合法' })
+
+  const existing = await prisma.transaction.findUnique({
+    where: { id },
+    include: { category: true, debt: true }
+  })
+  if (!existing) return res.status(404).json({ error: '交易记录不存在' })
+
+  const creditLinked =
+    existing.paymentMethod === 'credit_card' ||
+    existing.paymentMethod === 'credit_repayment' ||
+    existing.debtId !== null
+
+  if (creditLinked) {
+    const forbiddenKeys = ['amount', 'type', 'categoryId', 'paymentMethod', 'debtId']
+    const hasForbidden = forbiddenKeys.some((k) =>
+      Object.prototype.hasOwnProperty.call(req.body, k)
+    )
+    if (hasForbidden) {
+      return res.status(400).json({
+        error:
+          '涉及信用卡/负债联动的交易暂不支持修改金额/类型/分类/支付方式/信用卡，仅支持修改日期/备注/成员'
+      })
+    }
+
+    const nextDate = req.body.date ? new Date(req.body.date) : existing.date
+    if (Number.isNaN(nextDate.getTime())) return res.status(400).json({ error: '日期格式不正确' })
+
+    const updated = await prisma.transaction.update({
+      where: { id },
+      data: {
+        date: nextDate,
+        note: req.body.note === undefined ? existing.note : req.body.note || null,
+        person: req.body.person === undefined ? existing.person : req.body.person || null
+      },
+      include: { category: true, debt: true }
+    })
+    return res.json(updated)
+  }
+
+  const { amount, type, date, note, categoryId, person, paymentMethod, debtId } = req.body
+  if (amount === undefined || !type || !date || !categoryId) {
+    return res.status(400).json({ error: '金额、类型、日期、分类为必填项' })
+  }
+  if (type !== 'income' && type !== 'expense')
+    return res.status(400).json({ error: '交易类型不合法' })
+
+  const method = paymentMethod ? String(paymentMethod) : existing.paymentMethod || 'cash'
+  const allowedMethods = ['cash', 'bank', 'credit_card', 'credit_repayment']
+  if (!allowedMethods.includes(method)) return res.status(400).json({ error: '支付方式不合法' })
+
+  const nextDebtId = debtId === undefined || debtId === null ? null : Number(debtId)
+  if (method === 'credit_card' || method === 'credit_repayment' || nextDebtId !== null) {
+    return res.status(400).json({
+      error: '暂不支持把交易编辑为信用卡/负债联动类型，请删除后重新创建'
+    })
+  }
+
+  const category = await prisma.category.findUnique({ where: { id: Number(categoryId) } })
+  if (!category) return res.status(404).json({ error: '分类不存在' })
+  if (category.type !== type) return res.status(400).json({ error: '分类类型与交易类型不匹配' })
+
+  const txAmount = Number(amount)
+  if (!Number.isFinite(txAmount) || txAmount <= 0)
+    return res.status(400).json({ error: '金额不合法' })
+
+  const txDate = new Date(date)
+  if (Number.isNaN(txDate.getTime())) return res.status(400).json({ error: '日期格式不正确' })
+
+  const updated = await prisma.transaction.update({
+    where: { id },
+    data: {
+      amount: txAmount,
+      type,
+      paymentMethod: method,
+      date: txDate,
+      note: note || null,
+      person: person || null,
+      categoryId: Number(categoryId),
+      debtId: null
+    },
+    include: { category: true, debt: true }
+  })
+
+  return res.json(updated)
+})
+
 app.get('/api/debts', async (_req, res) => {
   const debts = await prisma.debt.findMany({
     orderBy: { updatedAt: 'desc' }
