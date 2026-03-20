@@ -74,3 +74,23 @@ curl -sS "$FINANCE_BASE_URL/api/quick-add" \
 ## 输出期望
 
 - 成功时返回 201，响应体里包含 `parsed` 和 `transaction`
+
+## 查询（OpenClaw 复盘）
+
+查询接口都是 GET，不需要 `X-API-KEY`。
+
+### 交易列表（可筛选日期）
+
+```bash
+curl -sS "$FINANCE_BASE_URL/api/transactions?from=2026-03-01&to=2026-03-31"
+```
+
+### 统计概览（适合让 OpenClaw 总结/复盘）
+
+接口：`GET /api/query/overview`
+
+```bash
+curl -sS "$FINANCE_BASE_URL/api/query/overview?from=2026-03-01&to=2026-03-31"
+```
+
+默认会把 `credit_repayment` 从支出统计里排除，避免“信用卡消费+还款”重复计入支出。

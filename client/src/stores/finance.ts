@@ -11,6 +11,7 @@ type 新增交易参数 = {
   person?: string
   categoryId: number
   debtId?: number | null
+  assetId?: number | null
 }
 
 type 更新交易参数 = Partial<新增交易参数>

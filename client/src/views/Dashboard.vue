@@ -38,6 +38,34 @@
       </a-col>
     </a-row>
 
+    <a-row :gutter="16">
+      <a-col :xs="24" :md="8">
+        <a-card class="shadow-sm" title="总资产">
+          <a-statistic :value="总资产" :precision="2" suffix="元" />
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :md="8">
+        <a-card class="shadow-sm" title="总负债">
+          <a-statistic
+            :value="总负债"
+            :precision="2"
+            suffix="元"
+            :value-style="{ color: '#ff4d4f' }"
+          />
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :md="8">
+        <a-card class="shadow-sm" title="净资产">
+          <a-statistic
+            :value="净资产"
+            :precision="2"
+            suffix="元"
+            :value-style="{ color: '#1677ff' }"
+          />
+        </a-card>
+      </a-col>
+    </a-row>
+
     <a-card class="shadow-sm" title="最近交易">
       <a-table
         :columns="columns"
@@ -82,9 +110,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useFinanceStore } from '@/stores/finance'
+import { useAssetsStore } from '@/stores/assets'
+import { useDebtsStore } from '@/stores/debts'
 import { formatDateTime } from '@/utils/datetime'
 
 const finance = useFinanceStore()
+const assetsStore = useAssetsStore()
+const debtsStore = useDebtsStore()
 
 const 本月范围 = () => {
   const now = new Date()
@@ -116,6 +148,10 @@ const 本月支出 = computed(() => {
 })
 
 const 当前结余 = computed(() => 本月收入.value - 本月支出.value)
+
+const 总资产 = computed(() => assetsStore.总资产)
+const 总负债 = computed(() => debtsStore.总负债)
+const 净资产 = computed(() => 总资产.value - 总负债.value)
 
 const 最近交易 = computed(() => finance.transactions.slice(0, 8))
 

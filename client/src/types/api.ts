@@ -34,6 +34,16 @@ export interface 负债流水 {
   createdAt: string
 }
 
+export interface 资产账户 {
+  id: number
+  name: string
+  type: string
+  balance: number
+  note: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface 交易记录 {
   id: number
   amount: number
@@ -44,8 +54,10 @@ export interface 交易记录 {
   person: string | null
   categoryId: number
   debtId: number | null
+  assetId: number | null
   createdAt: string
   updatedAt: string
   category: 分类
   debt?: 负债 | null
+  asset?: 资产账户 | null
 }

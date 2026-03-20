@@ -23,6 +23,10 @@
           <line-chart-outlined />
           <span>分类报表</span>
         </a-menu-item>
+        <a-menu-item key="/assets">
+          <wallet-outlined />
+          <span>资产账户</span>
+        </a-menu-item>
         <a-menu-item key="/debts">
           <credit-card-outlined />
           <span>家庭负债</span>
@@ -57,14 +61,19 @@ import {
   LineChartOutlined,
   PieChartOutlined,
   SettingOutlined,
-  UnorderedListOutlined
+  UnorderedListOutlined,
+  WalletOutlined
 } from '@ant-design/icons-vue'
 import { useFinanceStore } from '@/stores/finance'
+import { useAssetsStore } from '@/stores/assets'
+import { useDebtsStore } from '@/stores/debts'
 import logoUrl from '@/assets/logo.png'
 
 const route = useRoute()
 const router = useRouter()
 const finance = useFinanceStore()
+const assetsStore = useAssetsStore()
+const debtsStore = useDebtsStore()
 
 const collapsed = ref(false)
 
@@ -72,6 +81,7 @@ const selectedKeys = computed(() => {
   const path = route.path
   if (path.startsWith('/transactions')) return ['/transactions']
   if (path.startsWith('/reports')) return ['/reports']
+  if (path.startsWith('/assets')) return ['/assets']
   if (path.startsWith('/debts')) return ['/debts']
   if (path.startsWith('/settings')) return ['/settings']
   return ['/dashboard']
@@ -82,7 +92,12 @@ const onMenuClick = ({ key }: { key: string }) => {
 }
 
 onMounted(async () => {
-  await Promise.all([finance.拉取分类(), finance.拉取交易()])
+  await Promise.all([
+    finance.拉取分类(),
+    finance.拉取交易(),
+    assetsStore.拉取资产(),
+    debtsStore.拉取负债()
+  ])
 })
 </script>
 

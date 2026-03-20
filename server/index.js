@@ -62,6 +62,13 @@ const DEFAULT_CATEGORIES = [
   { name: '兼职', type: 'income' }
 ]
 
+const DEFAULT_ASSETS = [
+  { name: '现金', type: 'cash' },
+  { name: '银行卡', type: 'bank' },
+  { name: '微信', type: 'wechat' },
+  { name: '支付宝', type: 'alipay' }
+]
+
 async function ensureDefaultCategories() {
   for (const c of DEFAULT_CATEGORIES) {
     await prisma.category.upsert({
@@ -70,6 +77,45 @@ async function ensureDefaultCategories() {
       create: { name: c.name, type: c.type }
     })
   }
+}
+
+async function ensureDefaultAssets() {
+  for (const a of DEFAULT_ASSETS) {
+    await prisma.asset.upsert({
+      where: { name: a.name },
+      update: { type: a.type },
+      create: { name: a.name, type: a.type, balance: 0 }
+    })
+  }
+}
+
+function calcAssetDelta({ type, amount }) {
+  const v = Number(amount)
+  if (!Number.isFinite(v) || v <= 0) return 0
+  return type === 'income' ? v : -v
+}
+
+async function resolveDefaultAssetId(tx, paymentMethod) {
+  const method = String(paymentMethod || 'cash')
+  const map = { cash: '现金', bank: '银行卡', credit_repayment: '银行卡' }
+  const name = map[method]
+  if (!name) return null
+  const a = await tx.asset.findUnique({ where: { name }, select: { id: true } })
+  if (a) return a.id
+  const created = await tx.asset.create({
+    data: { name, type: method, balance: 0 },
+    select: { id: true }
+  })
+  return created.id
+}
+
+async function applyAssetDelta(tx, assetId, delta) {
+  if (!assetId) return
+  if (!Number.isFinite(delta) || delta === 0) return
+  await tx.asset.update({
+    where: { id: assetId },
+    data: { balance: { increment: delta } }
+  })
 }
 
 function toUtcDate(y, m, d) {
@@ -410,6 +456,66 @@ app.get('/api/categories', async (_req, res) => {
   res.json(categories)
 })
 
+app.get('/api/assets', async (_req, res) => {
+  await ensureDefaultAssets()
+  const assets = await prisma.asset.findMany({
+    orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }]
+  })
+  res.json(assets)
+})
+
+app.post('/api/assets', async (req, res) => {
+  const { name, type, balance, note } = req.body
+  if (!name) return res.status(400).json({ error: '账户名称为必填项' })
+  try {
+    const created = await prisma.asset.create({
+      data: {
+        name: String(name).trim(),
+        type: type ? String(type).trim() : 'cash',
+        balance: balance === undefined || balance === null ? 0 : Number(balance),
+        note: note ? String(note) : null
+      }
+    })
+    res.status(201).json(created)
+  } catch {
+    res.status(400).json({ error: '该账户已存在' })
+  }
+})
+
+app.put('/api/assets/:id', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '参数不合法' })
+  const { name, type, balance, note } = req.body
+  try {
+    const updated = await prisma.asset.update({
+      where: { id },
+      data: {
+        name: name === undefined ? undefined : String(name).trim(),
+        type: type === undefined ? undefined : String(type).trim(),
+        balance: balance === undefined ? undefined : Number(balance),
+        note: note === undefined ? undefined : note ? String(note) : null
+      }
+    })
+    res.json(updated)
+  } catch {
+    res.status(400).json({ error: '更新失败' })
+  }
+})
+
+app.delete('/api/assets/:id', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '参数不合法' })
+
+  const asset = await prisma.asset.findUnique({ where: { id } })
+  if (!asset) return res.status(404).json({ error: '账户不存在' })
+
+  const txCount = await prisma.transaction.count({ where: { assetId: id } })
+  if (txCount > 0) return res.status(400).json({ error: '该账户下存在交易记录，无法删除' })
+
+  await prisma.asset.delete({ where: { id } })
+  res.json({ ok: true })
+})
+
 app.post('/api/categories', async (req, res) => {
   const { name, type } = req.body
   if (!name || !type) return res.status(400).json({ error: '分类名称和类型为必填项' })
@@ -450,13 +556,88 @@ app.get('/api/transactions', async (req, res) => {
   const transactions = await prisma.transaction.findMany({
     where,
     orderBy: { date: 'desc' },
-    include: { category: true, debt: true }
+    include: { category: true, debt: true, asset: true }
   })
   res.json(transactions)
 })
 
+app.get('/api/query/overview', async (req, res) => {
+  const { from, to } = req.query
+  const excludeCreditRepayment = String(req.query.excludeCreditRepayment ?? '1') !== '0'
+
+  const where = {}
+  if (from || to) {
+    where.date = {}
+    if (from) where.date.gte = new Date(String(from))
+    if (to) where.date.lte = new Date(String(to))
+  }
+
+  const items = await prisma.transaction.findMany({
+    where,
+    include: { category: true },
+    orderBy: { date: 'asc' }
+  })
+
+  const list = excludeCreditRepayment
+    ? items.filter((t) => !(t.type === 'expense' && t.paymentMethod === 'credit_repayment'))
+    : items
+
+  const totals = list.reduce(
+    (acc, t) => {
+      if (t.type === 'income') acc.income += t.amount
+      else acc.expense += t.amount
+      return acc
+    },
+    { income: 0, expense: 0 }
+  )
+
+  const byCategoryExpenseMap = new Map()
+  const byPersonExpenseMap = new Map()
+  const byMonthMap = new Map()
+
+  for (const t of list) {
+    const month = new Date(t.date).toISOString().slice(0, 7)
+    const m = byMonthMap.get(month) ?? { month, income: 0, expense: 0 }
+    if (t.type === 'income') m.income += t.amount
+    else m.expense += t.amount
+    byMonthMap.set(month, m)
+
+    if (t.type === 'expense') {
+      const catKey = `${t.categoryId}`
+      const c = byCategoryExpenseMap.get(catKey) ?? {
+        categoryId: t.categoryId,
+        categoryName: t.category?.name ?? '未分类',
+        amount: 0
+      }
+      c.amount += t.amount
+      byCategoryExpenseMap.set(catKey, c)
+
+      const pKey = t.person || '未标记'
+      byPersonExpenseMap.set(pKey, (byPersonExpenseMap.get(pKey) ?? 0) + t.amount)
+    }
+  }
+
+  const byCategoryExpense = [...byCategoryExpenseMap.values()].sort((a, b) => b.amount - a.amount)
+  const byPersonExpense = [...byPersonExpenseMap.entries()]
+    .map(([person, amount]) => ({ person, amount }))
+    .sort((a, b) => b.amount - a.amount)
+  const byMonth = [...byMonthMap.values()]
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .map((m) => ({ ...m, net: m.income - m.expense }))
+
+  res.json({
+    range: { from: from ? String(from) : null, to: to ? String(to) : null },
+    excludeCreditRepayment,
+    totals: { ...totals, net: totals.income - totals.expense },
+    byCategoryExpense,
+    byPersonExpense,
+    byMonth
+  })
+})
+
 app.post('/api/transactions', async (req, res) => {
-  const { amount, type, date, note, categoryId, person, paymentMethod, debtId } = req.body
+  await ensureDefaultAssets()
+  const { amount, type, date, note, categoryId, person, paymentMethod, debtId, assetId } = req.body
   if (amount === undefined || !type || !date || !categoryId) {
     return res.status(400).json({ error: '金额、类型、日期、分类为必填项' })
   }
@@ -472,8 +653,12 @@ app.post('/api/transactions', async (req, res) => {
   if (category.type !== type) return res.status(400).json({ error: '分类类型与交易类型不匹配' })
 
   const txAmount = Number(amount)
+  if (!Number.isFinite(txAmount) || txAmount <= 0)
+    return res.status(400).json({ error: '金额不合法' })
   const txDate = new Date(date)
+  if (Number.isNaN(txDate.getTime())) return res.status(400).json({ error: '日期格式不正确' })
   const txDebtId = debtId === undefined || debtId === null ? null : Number(debtId)
+  const reqAssetId = assetId === undefined || assetId === null ? null : Number(assetId)
 
   try {
     const created = await prisma.$transaction(async (tx) => {
@@ -482,6 +667,17 @@ app.post('/api/transactions', async (req, res) => {
         debt = await tx.debt.findUnique({ where: { id: txDebtId } })
         if (!debt) throw new Error('DEBT_NOT_FOUND')
         if (debt.type !== 'credit_card') throw new Error('DEBT_TYPE_INVALID')
+      }
+
+      let effectiveAssetId = null
+      if (method !== 'credit_card') {
+        if (reqAssetId) {
+          const a = await tx.asset.findUnique({ where: { id: reqAssetId }, select: { id: true } })
+          if (!a) throw new Error('ASSET_NOT_FOUND')
+          effectiveAssetId = a.id
+        } else {
+          effectiveAssetId = await resolveDefaultAssetId(tx, method)
+        }
       }
 
       const createdTx = await tx.transaction.create({
@@ -493,10 +689,15 @@ app.post('/api/transactions', async (req, res) => {
           note: note || null,
           person: person || null,
           categoryId: Number(categoryId),
-          debtId: debt ? debt.id : null
+          debtId: debt ? debt.id : null,
+          assetId: effectiveAssetId
         },
-        include: { category: true, debt: true }
+        include: { category: true, debt: true, asset: true }
       })
+
+      if (effectiveAssetId) {
+        await applyAssetDelta(tx, effectiveAssetId, calcAssetDelta({ type, amount: txAmount }))
+      }
 
       if (debt) {
         const recordType = method === 'credit_card' ? 'borrow' : 'repay'
@@ -509,7 +710,8 @@ app.post('/api/transactions', async (req, res) => {
             type: recordType,
             amount: txAmount,
             date: txDate,
-            note: note || null
+            note: note || null,
+            transactionId: createdTx.id
           }
         })
         await tx.debt.update({ where: { id: debt.id }, data: { balance: nextBalance } })
@@ -524,17 +726,19 @@ app.post('/api/transactions', async (req, res) => {
     if (msg === 'DEBT_NOT_FOUND') return res.status(404).json({ error: '信用卡账户不存在' })
     if (msg === 'DEBT_TYPE_INVALID')
       return res.status(400).json({ error: '所选负债不是信用卡类型' })
+    if (msg === 'ASSET_NOT_FOUND') return res.status(404).json({ error: '资产账户不存在' })
     return res.status(500).json({ error: '服务器错误' })
   }
 })
 
 app.put('/api/transactions/:id', async (req, res) => {
+  await ensureDefaultAssets()
   const id = Number(req.params.id)
   if (!Number.isFinite(id)) return res.status(400).json({ error: '参数不合法' })
 
   const existing = await prisma.transaction.findUnique({
     where: { id },
-    include: { category: true, debt: true }
+    include: { category: true, debt: true, asset: true, debtRecord: true }
   })
   if (!existing) return res.status(404).json({ error: '交易记录不存在' })
 
@@ -551,26 +755,81 @@ app.put('/api/transactions/:id', async (req, res) => {
     if (hasForbidden) {
       return res.status(400).json({
         error:
-          '涉及信用卡/负债联动的交易暂不支持修改金额/类型/分类/支付方式/信用卡，仅支持修改日期/备注/成员'
+          '涉及信用卡/负债联动的交易暂不支持修改金额/类型/分类/支付方式/信用卡，仅支持修改日期/备注/成员/账户'
       })
     }
 
     const nextDate = req.body.date ? new Date(req.body.date) : existing.date
     if (Number.isNaN(nextDate.getTime())) return res.status(400).json({ error: '日期格式不正确' })
 
-    const updated = await prisma.transaction.update({
-      where: { id },
-      data: {
-        date: nextDate,
-        note: req.body.note === undefined ? existing.note : req.body.note || null,
-        person: req.body.person === undefined ? existing.person : req.body.person || null
-      },
-      include: { category: true, debt: true }
-    })
-    return res.json(updated)
+    const nextNote = req.body.note === undefined ? existing.note : req.body.note || null
+    const nextPerson = req.body.person === undefined ? existing.person : req.body.person || null
+    const rawAssetId = req.body.assetId
+    const nextAssetId =
+      rawAssetId === undefined ? undefined : rawAssetId === null ? null : Number(rawAssetId)
+    if (nextAssetId !== undefined && nextAssetId !== null && !Number.isFinite(nextAssetId))
+      return res.status(400).json({ error: '账户参数不合法' })
+
+    try {
+      const updated = await prisma.$transaction(async (tx) => {
+        let effectiveAssetId = existing.assetId
+        if (existing.paymentMethod === 'credit_card') {
+          effectiveAssetId = null
+        } else if (existing.paymentMethod === 'credit_repayment' && nextAssetId !== undefined) {
+          if (nextAssetId) {
+            const a = await tx.asset.findUnique({
+              where: { id: nextAssetId },
+              select: { id: true }
+            })
+            if (!a) throw new Error('ASSET_NOT_FOUND')
+            effectiveAssetId = a.id
+          } else {
+            effectiveAssetId = null
+          }
+        }
+
+        if (
+          existing.paymentMethod === 'credit_repayment' &&
+          existing.assetId !== effectiveAssetId
+        ) {
+          const delta = calcAssetDelta({ type: existing.type, amount: existing.amount })
+          if (existing.assetId) await applyAssetDelta(tx, existing.assetId, -delta)
+          if (effectiveAssetId) await applyAssetDelta(tx, effectiveAssetId, delta)
+        }
+
+        const t1 = await tx.transaction.update({
+          where: { id },
+          data: {
+            date: nextDate,
+            note: nextNote,
+            person: nextPerson,
+            assetId: effectiveAssetId
+          },
+          include: { category: true, debt: true, asset: true, debtRecord: true }
+        })
+
+        if (t1.debtRecord) {
+          await tx.debtRecord.update({
+            where: { id: t1.debtRecord.id },
+            data: {
+              date: nextDate,
+              note: nextNote
+            }
+          })
+        }
+
+        return t1
+      })
+
+      return res.json(updated)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : ''
+      if (msg === 'ASSET_NOT_FOUND') return res.status(404).json({ error: '资产账户不存在' })
+      return res.status(500).json({ error: '服务器错误' })
+    }
   }
 
-  const { amount, type, date, note, categoryId, person, paymentMethod, debtId } = req.body
+  const { amount, type, date, note, categoryId, person, paymentMethod, debtId, assetId } = req.body
   if (amount === undefined || !type || !date || !categoryId) {
     return res.status(400).json({ error: '金额、类型、日期、分类为必填项' })
   }
@@ -588,6 +847,16 @@ app.put('/api/transactions/:id', async (req, res) => {
     })
   }
 
+  const nextAssetId =
+    assetId === undefined ? existing.assetId : assetId === null ? null : Number(assetId)
+  if (nextAssetId !== null && nextAssetId !== undefined && !Number.isFinite(nextAssetId))
+    return res.status(400).json({ error: '账户参数不合法' })
+
+  if (nextAssetId) {
+    const a = await prisma.asset.findUnique({ where: { id: nextAssetId }, select: { id: true } })
+    if (!a) return res.status(404).json({ error: '资产账户不存在' })
+  }
+
   const category = await prisma.category.findUnique({ where: { id: Number(categoryId) } })
   if (!category) return res.status(404).json({ error: '分类不存在' })
   if (category.type !== type) return res.status(400).json({ error: '分类类型与交易类型不匹配' })
@@ -599,19 +868,37 @@ app.put('/api/transactions/:id', async (req, res) => {
   const txDate = new Date(date)
   if (Number.isNaN(txDate.getTime())) return res.status(400).json({ error: '日期格式不正确' })
 
-  const updated = await prisma.transaction.update({
-    where: { id },
-    data: {
-      amount: txAmount,
-      type,
-      paymentMethod: method,
-      date: txDate,
-      note: note || null,
-      person: person || null,
-      categoryId: Number(categoryId),
-      debtId: null
-    },
-    include: { category: true, debt: true }
+  const updated = await prisma.$transaction(async (tx) => {
+    const prevDelta =
+      existing.assetId && existing.paymentMethod !== 'credit_card'
+        ? calcAssetDelta({ type: existing.type, amount: existing.amount })
+        : 0
+    const nextDelta = nextAssetId ? calcAssetDelta({ type, amount: txAmount }) : 0
+
+    const t1 = await tx.transaction.update({
+      where: { id },
+      data: {
+        amount: txAmount,
+        type,
+        paymentMethod: method,
+        date: txDate,
+        note: note || null,
+        person: person || null,
+        categoryId: Number(categoryId),
+        debtId: null,
+        assetId: nextAssetId === undefined ? undefined : nextAssetId
+      },
+      include: { category: true, debt: true, asset: true }
+    })
+
+    if (existing.assetId && existing.assetId === nextAssetId) {
+      await applyAssetDelta(tx, existing.assetId, nextDelta - prevDelta)
+    } else {
+      if (existing.assetId) await applyAssetDelta(tx, existing.assetId, -prevDelta)
+      if (nextAssetId) await applyAssetDelta(tx, nextAssetId, nextDelta)
+    }
+
+    return t1
   })
 
   return res.json(updated)
@@ -739,6 +1026,7 @@ app.post('/api/debts/:id/records', async (req, res) => {
 app.post('/api/ingest', async (req, res) => {
   if (!quickAddConfig) await loadQuickAddConfig()
   await ensureDefaultCategories()
+  await ensureDefaultAssets()
 
   const text = extractTextFromRequestBody(req.body)
   const parsed = parseCanonicalText(text)
@@ -751,18 +1039,25 @@ app.post('/api/ingest', async (req, res) => {
   const category = await resolveCategoryByName({ name: parsed.categoryName, type: parsed.type })
   if (!category) return res.status(400).json({ error: '分类不存在，且已关闭自动创建新分类' })
 
-  const created = await prisma.transaction.create({
-    data: {
-      amount: Number(parsed.amount),
-      type: parsed.type,
-      paymentMethod: 'cash',
-      date: parsed.date,
-      note: parsed.note || null,
-      person: parsed.person || null,
-      categoryId: category.id,
-      debtId: null
-    },
-    include: { category: true, debt: true }
+  const created = await prisma.$transaction(async (tx) => {
+    const assetId = await resolveDefaultAssetId(tx, 'cash')
+    const t1 = await tx.transaction.create({
+      data: {
+        amount: Number(parsed.amount),
+        type: parsed.type,
+        paymentMethod: 'cash',
+        date: parsed.date,
+        note: parsed.note || null,
+        person: parsed.person || null,
+        categoryId: category.id,
+        debtId: null,
+        assetId
+      },
+      include: { category: true, debt: true, asset: true }
+    })
+    if (assetId)
+      await applyAssetDelta(tx, assetId, calcAssetDelta({ type: parsed.type, amount: t1.amount }))
+    return t1
   })
 
   res.status(201).json({
@@ -785,6 +1080,7 @@ app.post('/api/quick-add', async (req, res) => {
 
   if (!quickAddConfig) await loadQuickAddConfig()
   await ensureDefaultCategories()
+  await ensureDefaultAssets()
 
   const original = text.trim()
   const { person, rest: afterPerson } = extractPerson(original)
@@ -807,18 +1103,24 @@ app.post('/api/quick-add', async (req, res) => {
     .trim()
   const note = cleanedNote || null
 
-  const created = await prisma.transaction.create({
-    data: {
-      amount: Number(amount),
-      type,
-      paymentMethod: 'cash',
-      date,
-      note,
-      person: person || null,
-      categoryId,
-      debtId: null
-    },
-    include: { category: true, debt: true }
+  const created = await prisma.$transaction(async (tx) => {
+    const assetId = await resolveDefaultAssetId(tx, 'cash')
+    const t1 = await tx.transaction.create({
+      data: {
+        amount: Number(amount),
+        type,
+        paymentMethod: 'cash',
+        date,
+        note,
+        person: person || null,
+        categoryId,
+        debtId: null,
+        assetId
+      },
+      include: { category: true, debt: true, asset: true }
+    })
+    if (assetId) await applyAssetDelta(tx, assetId, calcAssetDelta({ type, amount: t1.amount }))
+    return t1
   })
 
   res.status(201).json({
@@ -836,13 +1138,52 @@ app.post('/api/quick-add', async (req, res) => {
 })
 
 app.delete('/api/transactions/:id', async (req, res) => {
+  await ensureDefaultAssets()
   const id = Number(req.params.id)
   if (!Number.isFinite(id)) return res.status(400).json({ error: '参数不合法' })
 
-  const tx = await prisma.transaction.findUnique({ where: { id } })
-  if (!tx) return res.status(404).json({ error: '交易记录不存在' })
-  await prisma.transaction.delete({ where: { id } })
-  res.json({ ok: true })
+  const existing = await prisma.transaction.findUnique({
+    where: { id },
+    include: { debt: true, asset: true, debtRecord: true }
+  })
+  if (!existing) return res.status(404).json({ error: '交易记录不存在' })
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      if (existing.assetId && existing.paymentMethod !== 'credit_card') {
+        const prevDelta = calcAssetDelta({ type: existing.type, amount: existing.amount })
+        await applyAssetDelta(tx, existing.assetId, -prevDelta)
+      }
+
+      if (
+        existing.debtId &&
+        (existing.paymentMethod === 'credit_card' || existing.paymentMethod === 'credit_repayment')
+      ) {
+        const debt = await tx.debt.findUnique({ where: { id: existing.debtId } })
+        if (debt) {
+          const recordType = existing.paymentMethod === 'credit_card' ? 'borrow' : 'repay'
+          const nextBalance =
+            recordType === 'borrow'
+              ? debt.balance - existing.amount
+              : debt.balance + existing.amount
+          await tx.debt.update({ where: { id: debt.id }, data: { balance: nextBalance } })
+        }
+
+        if (existing.debtRecord) {
+          await tx.debtRecord.delete({ where: { id: existing.debtRecord.id } })
+        } else {
+          const r = await tx.debtRecord.findFirst({ where: { transactionId: id } })
+          if (r) await tx.debtRecord.delete({ where: { id: r.id } })
+        }
+      }
+
+      await tx.transaction.delete({ where: { id } })
+    })
+
+    res.json({ ok: true })
+  } catch {
+    res.status(500).json({ error: '服务器错误' })
+  }
 })
 
 app.get('/', (req, res) => {
@@ -855,3 +1196,4 @@ app.listen(PORT, () => {
 })
 
 ensureDefaultCategories().catch(() => {})
+ensureDefaultAssets().catch(() => {})

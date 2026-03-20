@@ -21,8 +21,25 @@ model Transaction {
   category   Category  @relation(fields: [categoryId], references: [id])
   categoryId Int
 
+  asset   Asset? @relation(fields: [assetId], references: [id])
+  assetId Int?
+
   debt   Debt? @relation(fields: [debtId], references: [id])
   debtId Int?
+
+  debtRecord DebtRecord? @relation("TransactionDebtRecord")
+}
+
+model Asset {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  type      String   @default("cash")
+  balance   Float    @default(0)
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
 }
 
 model Debt {
@@ -54,6 +71,9 @@ model DebtRecord {
 
   debt   Debt @relation(fields: [debtId], references: [id], onDelete: Cascade)
   debtId Int
+
+  transaction   Transaction? @relation("TransactionDebtRecord", fields: [transactionId], references: [id], onDelete: SetNull)
+  transactionId Int?         @unique
 }
 
 model Category {

@@ -53,6 +53,9 @@
           <template v-else-if="column.dataIndex === 'debt'">
             <span class="text-gray-700">{{ record.debt?.name || '-' }}</span>
           </template>
+          <template v-else-if="column.dataIndex === 'asset'">
+            <span class="text-gray-700">{{ record.asset?.name || '-' }}</span>
+          </template>
           <template v-else-if="column.dataIndex === 'action'">
             <a class="mr-3 text-blue-600" @click="编辑(record)">编辑</a>
             <a-popconfirm
@@ -77,7 +80,11 @@
     >
       <a-form layout="vertical">
         <a-form-item label="交易类型">
-          <a-radio-group v-model:value="form.type" button-style="solid" :disabled="仅可编辑备注日期成员">
+          <a-radio-group
+            v-model:value="form.type"
+            button-style="solid"
+            :disabled="仅可编辑备注日期成员"
+          >
             <a-radio-button value="expense">支出</a-radio-button>
             <a-radio-button value="income">收入</a-radio-button>
           </a-radio-group>
@@ -101,6 +108,19 @@
             <a-select-option value="bank">银行卡</a-select-option>
             <a-select-option value="credit_card">信用卡消费</a-select-option>
             <a-select-option value="credit_repayment">信用卡还款</a-select-option>
+          </a-select>
+        </a-form-item>
+
+        <a-form-item label="账户">
+          <a-select
+            v-model:value="form.assetId"
+            placeholder="请选择账户（可选）"
+            :disabled="form.paymentMethod === 'credit_card'"
+            allow-clear
+          >
+            <a-select-option v-for="a in assetsStore.assets" :key="a.id" :value="a.id">
+              {{ a.name }}
+            </a-select-option>
           </a-select>
         </a-form-item>
 
@@ -152,11 +172,13 @@ import { message } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { useFinanceStore } from '@/stores/finance'
 import { useDebtsStore } from '@/stores/debts'
+import { useAssetsStore } from '@/stores/assets'
 import type { 交易记录, 交易类型, 支付方式 } from '@/types/api'
 import { formatDateTime } from '@/utils/datetime'
 
 const finance = useFinanceStore()
 const debtsStore = useDebtsStore()
+const assetsStore = useAssetsStore()
 
 const modalOpen = ref(false)
 const editingId = ref<number | null>(null)
@@ -167,6 +189,7 @@ const form = reactive<{
   categoryId: number | null
   paymentMethod: 支付方式
   debtId: number | null
+  assetId: number | null
   amount: number | null
   date: string
   person: string
@@ -176,6 +199,7 @@ const form = reactive<{
   categoryId: null,
   paymentMethod: 'cash',
   debtId: null,
+  assetId: null,
   amount: null,
   date: new Date().toISOString().slice(0, 19).replace('T', ' '),
   person: '',
@@ -208,6 +232,7 @@ const columns = [
   { title: '金额', dataIndex: 'amount', key: 'amount' },
   { title: '支付方式', dataIndex: 'paymentMethod', key: 'paymentMethod' },
   { title: '信用卡', dataIndex: 'debt', key: 'debt' },
+  { title: '账户', dataIndex: 'asset', key: 'asset' },
   { title: '成员', dataIndex: 'person', key: 'person' },
   { title: '备注', dataIndex: 'note', key: 'note' },
   { title: '操作', dataIndex: 'action', key: 'action' }
@@ -221,6 +246,7 @@ function 打开弹窗() {
   form.categoryId = null
   form.paymentMethod = 'cash'
   form.debtId = null
+  form.assetId = null
   form.amount = null
   form.date = new Date().toISOString().slice(0, 19).replace('T', ' ')
   form.person = ''
@@ -236,6 +262,7 @@ function 编辑(record: 交易记录) {
   form.categoryId = record.categoryId
   form.paymentMethod = record.paymentMethod
   form.debtId = record.debtId ?? null
+  form.assetId = record.assetId ?? null
   form.amount = record.amount
   form.date = formatDateTime(record.date)
   form.person = record.person ?? ''
@@ -244,6 +271,7 @@ function 编辑(record: 交易记录) {
 
 onMounted(async () => {
   await debtsStore.拉取负债()
+  await assetsStore.拉取资产()
 })
 
 async function 提交() {
@@ -251,7 +279,8 @@ async function 提交() {
     await finance.更新交易(editingId.value, {
       date: form.date,
       note: form.note,
-      person: form.person
+      person: form.person,
+      assetId: form.paymentMethod === 'credit_card' ? null : form.assetId
     })
   } else {
     if (form.paymentMethod === 'credit_repayment' && 还款分类Id.value) {
@@ -269,7 +298,8 @@ async function 提交() {
       note: form.note,
       person: form.person,
       categoryId: form.categoryId,
-      debtId: 需要选择信用卡.value ? form.debtId : null
+      debtId: 需要选择信用卡.value ? form.debtId : null,
+      assetId: form.paymentMethod === 'credit_card' ? null : form.assetId
     }
 
     if (editingId.value) await finance.更新交易(editingId.value, payload)
@@ -284,6 +314,7 @@ async function 提交() {
   form.note = ''
   form.categoryId = null
   form.debtId = null
+  form.assetId = null
   form.paymentMethod = 'cash'
   form.person = ''
 }
