@@ -666,58 +666,9 @@ app.post('/api/transactions', async (req, res) => {
       if ((method === 'credit_card' || method === 'credit_repayment') && txDebtId) {
         debt = await tx.debt.findUnique({ where: { id: txDebtId } })
         if (!debt) throw new Error('DEBT_NOT_FOUND')
-        if (debt.type !== 'credit_card') throw new Error('DEBT_TYPE_INVALID')
+        if (!['credit_card', 'credit_line', 'huabei', 'baitiao'].includes(debt.type))
+          throw new Error('DEBT_TYPE_INVALID')
       }
-
-      let effectiveAssetId = null
-      if (method !== 'credit_card') {
-        if (reqAssetId) {
-          const a = await tx.asset.findUnique({ where: { id: reqAssetId }, select: { id: true } })
-          if (!a) throw new Error('ASSET_NOT_FOUND')
-          effectiveAssetId = a.id
-        } else {
-          effectiveAssetId = await resolveDefaultAssetId(tx, method)
-        }
-      }
-
-      const createdTx = await tx.transaction.create({
-        data: {
-          amount: txAmount,
-          type,
-          paymentMethod: method,
-          date: txDate,
-          note: note || null,
-          person: person || null,
-          categoryId: Number(categoryId),
-          debtId: debt ? debt.id : null,
-          assetId: effectiveAssetId
-        },
-        include: { category: true, debt: true, asset: true }
-      })
-
-      if (effectiveAssetId) {
-        await applyAssetDelta(tx, effectiveAssetId, calcAssetDelta({ type, amount: txAmount }))
-      }
-
-      if (debt) {
-        const recordType = method === 'credit_card' ? 'borrow' : 'repay'
-        const nextBalance =
-          recordType === 'borrow' ? debt.balance + txAmount : debt.balance - txAmount
-
-        await tx.debtRecord.create({
-          data: {
-            debtId: debt.id,
-            type: recordType,
-            amount: txAmount,
-            date: txDate,
-            note: note || null,
-            transactionId: createdTx.id
-          }
-        })
-        await tx.debt.update({ where: { id: debt.id }, data: { balance: nextBalance } })
-      }
-
-      return createdTx
     })
 
     res.status(201).json(created)
@@ -742,43 +693,127 @@ app.put('/api/transactions/:id', async (req, res) => {
   })
   if (!existing) return res.status(404).json({ error: '交易记录不存在' })
 
-  const creditLinked =
-    existing.paymentMethod === 'credit_card' ||
-    existing.paymentMethod === 'credit_repayment' ||
-    existing.debtId !== null
+  const hasAssetId = Object.prototype.hasOwnProperty.call(req.body, 'assetId')
+  const hasDebtId = Object.prototype.hasOwnProperty.call(req.body, 'debtId')
 
-  if (creditLinked) {
-    const forbiddenKeys = ['amount', 'type', 'categoryId', 'paymentMethod', 'debtId']
-    const hasForbidden = forbiddenKeys.some((k) =>
-      Object.prototype.hasOwnProperty.call(req.body, k)
-    )
-    if (hasForbidden) {
-      return res.status(400).json({
-        error:
-          '涉及信用卡/负债联动的交易暂不支持修改金额/类型/分类/支付方式/信用卡，仅支持修改日期/备注/成员/账户'
-      })
-    }
+  const nextPaymentMethod =
+    req.body.paymentMethod === undefined ? existing.paymentMethod : String(req.body.paymentMethod)
+  const allowedMethods = ['cash', 'bank', 'credit_card', 'credit_repayment']
+  if (!allowedMethods.includes(nextPaymentMethod))
+    return res.status(400).json({ error: '支付方式不合法' })
 
-    const nextDate = req.body.date ? new Date(req.body.date) : existing.date
-    if (Number.isNaN(nextDate.getTime())) return res.status(400).json({ error: '日期格式不正确' })
+  const nextType = req.body.type === undefined ? existing.type : String(req.body.type)
+  if (nextType !== 'income' && nextType !== 'expense')
+    return res.status(400).json({ error: '交易类型不合法' })
 
-    const nextNote = req.body.note === undefined ? existing.note : req.body.note || null
-    const nextPerson = req.body.person === undefined ? existing.person : req.body.person || null
-    const rawAssetId = req.body.assetId
-    const nextAssetId =
-      rawAssetId === undefined ? undefined : rawAssetId === null ? null : Number(rawAssetId)
-    if (nextAssetId !== undefined && nextAssetId !== null && !Number.isFinite(nextAssetId))
-      return res.status(400).json({ error: '账户参数不合法' })
+  const nextCategoryId =
+    req.body.categoryId === undefined ? existing.categoryId : Number(req.body.categoryId)
+  if (!Number.isFinite(nextCategoryId)) return res.status(400).json({ error: '分类参数不合法' })
 
-    try {
-      const updated = await prisma.$transaction(async (tx) => {
-        let effectiveAssetId = existing.assetId
-        if (existing.paymentMethod === 'credit_card') {
+  const nextAmount = req.body.amount === undefined ? existing.amount : Number(req.body.amount)
+  if (!Number.isFinite(nextAmount) || nextAmount <= 0)
+    return res.status(400).json({ error: '金额不合法' })
+
+  const nextDate = req.body.date ? new Date(req.body.date) : existing.date
+  if (Number.isNaN(nextDate.getTime())) return res.status(400).json({ error: '日期格式不正确' })
+
+  const nextNote = req.body.note === undefined ? existing.note : req.body.note || null
+  const nextPerson = req.body.person === undefined ? existing.person : req.body.person || null
+
+  const nextDebtId = hasDebtId
+    ? req.body.debtId === null
+      ? null
+      : Number(req.body.debtId)
+    : existing.debtId
+  if (nextDebtId !== null && nextDebtId !== undefined && !Number.isFinite(nextDebtId))
+    return res.status(400).json({ error: '信用卡账户参数不合法' })
+
+  const rawAssetId = hasAssetId ? req.body.assetId : undefined
+  const requestedAssetId =
+    rawAssetId === undefined ? undefined : rawAssetId === null ? null : Number(rawAssetId)
+  if (
+    requestedAssetId !== null &&
+    requestedAssetId !== undefined &&
+    !Number.isFinite(requestedAssetId)
+  )
+    return res.status(400).json({ error: '账户参数不合法' })
+
+  const wantsCredit =
+    nextPaymentMethod === 'credit_card' || nextPaymentMethod === 'credit_repayment'
+  if (wantsCredit) {
+    if (nextType !== 'expense') return res.status(400).json({ error: '信用卡交易类型必须是支出' })
+    if (!nextDebtId) return res.status(400).json({ error: '请选择信用卡账户' })
+  }
+
+  const category = await prisma.category.findUnique({ where: { id: nextCategoryId } })
+  if (!category) return res.status(404).json({ error: '分类不存在' })
+  if (category.type !== nextType) return res.status(400).json({ error: '分类类型与交易类型不匹配' })
+
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      if (existing.assetId && existing.paymentMethod !== 'credit_card') {
+        const prevDelta = calcAssetDelta({ type: existing.type, amount: existing.amount })
+        await applyAssetDelta(tx, existing.assetId, -prevDelta)
+      }
+
+      if (
+        existing.debtId &&
+        (existing.paymentMethod === 'credit_card' || existing.paymentMethod === 'credit_repayment')
+      ) {
+        const debt = await tx.debt.findUnique({ where: { id: existing.debtId } })
+        if (debt) {
+          const prevRecordType = existing.paymentMethod === 'credit_card' ? 'borrow' : 'repay'
+          const nextBalance =
+            prevRecordType === 'borrow'
+              ? debt.balance - existing.amount
+              : debt.balance + existing.amount
+          await tx.debt.update({ where: { id: debt.id }, data: { balance: nextBalance } })
+        }
+
+        if (existing.debtRecord) {
+          await tx.debtRecord.delete({ where: { id: existing.debtRecord.id } })
+        } else {
+          const r = await tx.debtRecord.findFirst({ where: { transactionId: id } })
+          if (r) await tx.debtRecord.delete({ where: { id: r.id } })
+        }
+      }
+
+      let effectiveDebtId = wantsCredit ? Number(nextDebtId) : null
+      let effectiveAssetId = null
+
+      if (wantsCredit) {
+        const debt = await tx.debt.findUnique({ where: { id: effectiveDebtId } })
+        if (!debt) throw new Error('DEBT_NOT_FOUND')
+        if (!['credit_card', 'credit_line', 'huabei', 'baitiao'].includes(debt.type))
+          throw new Error('DEBT_TYPE_INVALID')
+
+        if (nextPaymentMethod === 'credit_card') {
           effectiveAssetId = null
-        } else if (existing.paymentMethod === 'credit_repayment' && nextAssetId !== undefined) {
-          if (nextAssetId) {
+        } else {
+          if (hasAssetId) {
+            if (requestedAssetId) {
+              const a = await tx.asset.findUnique({
+                where: { id: requestedAssetId },
+                select: { id: true }
+              })
+              if (!a) throw new Error('ASSET_NOT_FOUND')
+              effectiveAssetId = a.id
+            } else {
+              effectiveAssetId = null
+            }
+          } else {
+            effectiveAssetId =
+              existing.paymentMethod === 'credit_repayment' && existing.assetId
+                ? existing.assetId
+                : await resolveDefaultAssetId(tx, 'bank')
+          }
+        }
+      } else {
+        effectiveDebtId = null
+        if (hasAssetId) {
+          if (requestedAssetId) {
             const a = await tx.asset.findUnique({
-              where: { id: nextAssetId },
+              where: { id: requestedAssetId },
               select: { id: true }
             })
             if (!a) throw new Error('ASSET_NOT_FOUND')
@@ -786,122 +821,71 @@ app.put('/api/transactions/:id', async (req, res) => {
           } else {
             effectiveAssetId = null
           }
+        } else {
+          effectiveAssetId =
+            existing.paymentMethod === nextPaymentMethod && existing.assetId
+              ? existing.assetId
+              : await resolveDefaultAssetId(tx, nextPaymentMethod)
         }
+      }
 
-        if (
-          existing.paymentMethod === 'credit_repayment' &&
-          existing.assetId !== effectiveAssetId
-        ) {
-          const delta = calcAssetDelta({ type: existing.type, amount: existing.amount })
-          if (existing.assetId) await applyAssetDelta(tx, existing.assetId, -delta)
-          if (effectiveAssetId) await applyAssetDelta(tx, effectiveAssetId, delta)
-        }
-
-        const t1 = await tx.transaction.update({
-          where: { id },
-          data: {
-            date: nextDate,
-            note: nextNote,
-            person: nextPerson,
-            assetId: effectiveAssetId
-          },
-          include: { category: true, debt: true, asset: true, debtRecord: true }
-        })
-
-        if (t1.debtRecord) {
-          await tx.debtRecord.update({
-            where: { id: t1.debtRecord.id },
-            data: {
-              date: nextDate,
-              note: nextNote
-            }
-          })
-        }
-
-        return t1
+      const t1 = await tx.transaction.update({
+        where: { id },
+        data: {
+          amount: nextAmount,
+          type: nextType,
+          paymentMethod: nextPaymentMethod,
+          date: nextDate,
+          note: nextNote,
+          person: nextPerson,
+          categoryId: nextCategoryId,
+          debtId: effectiveDebtId,
+          assetId: effectiveAssetId
+        },
+        include: { category: true, debt: true, asset: true, debtRecord: true }
       })
 
-      return res.json(updated)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : ''
-      if (msg === 'ASSET_NOT_FOUND') return res.status(404).json({ error: '资产账户不存在' })
-      return res.status(500).json({ error: '服务器错误' })
-    }
-  }
+      if (effectiveAssetId && nextPaymentMethod !== 'credit_card') {
+        await applyAssetDelta(
+          tx,
+          effectiveAssetId,
+          calcAssetDelta({ type: nextType, amount: nextAmount })
+        )
+      }
 
-  const { amount, type, date, note, categoryId, person, paymentMethod, debtId, assetId } = req.body
-  if (amount === undefined || !type || !date || !categoryId) {
-    return res.status(400).json({ error: '金额、类型、日期、分类为必填项' })
-  }
-  if (type !== 'income' && type !== 'expense')
-    return res.status(400).json({ error: '交易类型不合法' })
+      if (wantsCredit && effectiveDebtId) {
+        const debt = await tx.debt.findUnique({ where: { id: effectiveDebtId } })
+        if (!debt) throw new Error('DEBT_NOT_FOUND')
 
-  const method = paymentMethod ? String(paymentMethod) : existing.paymentMethod || 'cash'
-  const allowedMethods = ['cash', 'bank', 'credit_card', 'credit_repayment']
-  if (!allowedMethods.includes(method)) return res.status(400).json({ error: '支付方式不合法' })
+        const recordType = nextPaymentMethod === 'credit_card' ? 'borrow' : 'repay'
+        const nextBalance =
+          recordType === 'borrow' ? debt.balance + nextAmount : debt.balance - nextAmount
+        await tx.debt.update({ where: { id: debt.id }, data: { balance: nextBalance } })
 
-  const nextDebtId = debtId === undefined || debtId === null ? null : Number(debtId)
-  if (method === 'credit_card' || method === 'credit_repayment' || nextDebtId !== null) {
-    return res.status(400).json({
-      error: '暂不支持把交易编辑为信用卡/负债联动类型，请删除后重新创建'
-    })
-  }
+        await tx.debtRecord.create({
+          data: {
+            debtId: debt.id,
+            type: recordType,
+            amount: nextAmount,
+            date: nextDate,
+            note: nextNote,
+            transactionId: t1.id
+          }
+        })
+      }
 
-  const nextAssetId =
-    assetId === undefined ? existing.assetId : assetId === null ? null : Number(assetId)
-  if (nextAssetId !== null && nextAssetId !== undefined && !Number.isFinite(nextAssetId))
-    return res.status(400).json({ error: '账户参数不合法' })
-
-  if (nextAssetId) {
-    const a = await prisma.asset.findUnique({ where: { id: nextAssetId }, select: { id: true } })
-    if (!a) return res.status(404).json({ error: '资产账户不存在' })
-  }
-
-  const category = await prisma.category.findUnique({ where: { id: Number(categoryId) } })
-  if (!category) return res.status(404).json({ error: '分类不存在' })
-  if (category.type !== type) return res.status(400).json({ error: '分类类型与交易类型不匹配' })
-
-  const txAmount = Number(amount)
-  if (!Number.isFinite(txAmount) || txAmount <= 0)
-    return res.status(400).json({ error: '金额不合法' })
-
-  const txDate = new Date(date)
-  if (Number.isNaN(txDate.getTime())) return res.status(400).json({ error: '日期格式不正确' })
-
-  const updated = await prisma.$transaction(async (tx) => {
-    const prevDelta =
-      existing.assetId && existing.paymentMethod !== 'credit_card'
-        ? calcAssetDelta({ type: existing.type, amount: existing.amount })
-        : 0
-    const nextDelta = nextAssetId ? calcAssetDelta({ type, amount: txAmount }) : 0
-
-    const t1 = await tx.transaction.update({
-      where: { id },
-      data: {
-        amount: txAmount,
-        type,
-        paymentMethod: method,
-        date: txDate,
-        note: note || null,
-        person: person || null,
-        categoryId: Number(categoryId),
-        debtId: null,
-        assetId: nextAssetId === undefined ? undefined : nextAssetId
-      },
-      include: { category: true, debt: true, asset: true }
+      return t1
     })
 
-    if (existing.assetId && existing.assetId === nextAssetId) {
-      await applyAssetDelta(tx, existing.assetId, nextDelta - prevDelta)
-    } else {
-      if (existing.assetId) await applyAssetDelta(tx, existing.assetId, -prevDelta)
-      if (nextAssetId) await applyAssetDelta(tx, nextAssetId, nextDelta)
-    }
-
-    return t1
-  })
-
-  return res.json(updated)
+    return res.json(updated)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : ''
+    if (msg === 'DEBT_NOT_FOUND') return res.status(404).json({ error: '信用卡账户不存在' })
+    if (msg === 'DEBT_TYPE_INVALID')
+      return res.status(400).json({ error: '所选负债不是信用卡类型' })
+    if (msg === 'ASSET_NOT_FOUND') return res.status(404).json({ error: '资产账户不存在' })
+    return res.status(500).json({ error: '服务器错误' })
+  }
 })
 
 app.get('/api/debts', async (_req, res) => {

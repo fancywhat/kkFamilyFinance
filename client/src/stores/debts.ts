@@ -29,7 +29,8 @@ export const useDebtsStore = defineStore('debts', {
     loading: false,
   }),
   getters: {
-    信用卡列表: (s) => s.debts.filter((d) => d.type === 'credit_card'),
+    信用额度列表: (s) =>
+      s.debts.filter((d) => ['credit_card', 'credit_line', 'huabei', 'baitiao'].includes(d.type)),
     总负债: (s) => s.debts.reduce((sum, d) => sum + (Number(d.balance) || 0), 0),
   },
   actions: {
@@ -60,4 +61,3 @@ export const useDebtsStore = defineStore('debts', {
     },
   },
 })
-

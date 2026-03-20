@@ -124,13 +124,19 @@
           </a-select>
         </a-form-item>
 
-        <a-form-item v-if="需要选择信用卡" label="信用卡账户">
+        <a-form-item v-if="需要选择信用卡" label="信用额度账户">
           <a-select
             v-model:value="form.debtId"
-            placeholder="请选择信用卡"
+            placeholder="请选择信用卡/花呗/白条/月付"
             :disabled="仅可编辑备注日期成员"
           >
-            <a-select-option v-for="d in debtsStore.信用卡列表" :key="d.id" :value="d.id">
+            <template #notFoundContent>
+              <div class="px-2 py-1">
+                <div class="text-gray-500 mb-2">还没有信用额度账户</div>
+                <a-button type="link" size="small" @click="去配置信用卡">去家庭负债创建</a-button>
+              </div>
+            </template>
+            <a-select-option v-for="d in debtsStore.信用额度列表" :key="d.id" :value="d.id">
               {{ d.name }}
             </a-select-option>
           </a-select>
@@ -170,12 +176,14 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
+import { useRouter } from 'vue-router'
 import { useFinanceStore } from '@/stores/finance'
 import { useDebtsStore } from '@/stores/debts'
 import { useAssetsStore } from '@/stores/assets'
 import type { 交易记录, 交易类型, 支付方式 } from '@/types/api'
 import { formatDateTime } from '@/utils/datetime'
 
+const router = useRouter()
 const finance = useFinanceStore()
 const debtsStore = useDebtsStore()
 const assetsStore = useAssetsStore()
@@ -269,58 +277,81 @@ function 编辑(record: 交易记录) {
   form.note = record.note ?? ''
 }
 
+function 去配置信用卡() {
+  modalOpen.value = false
+  router.push('/debts')
+}
+
+function 获取接口错误(err: unknown) {
+  const e: any = err
+  const msg =
+    e?.response?.data?.error ??
+    e?.response?.data?.message ??
+    e?.message ??
+    '操作失败'
+  return String(msg)
+}
+
 onMounted(async () => {
   await debtsStore.拉取负债()
   await assetsStore.拉取资产()
 })
 
 async function 提交() {
-  if (editingId.value && 仅可编辑备注日期成员.value) {
-    await finance.更新交易(editingId.value, {
-      date: form.date,
-      note: form.note,
-      person: form.person,
-      assetId: form.paymentMethod === 'credit_card' ? null : form.assetId
-    })
-  } else {
-    if (form.paymentMethod === 'credit_repayment' && 还款分类Id.value) {
-      form.categoryId = 还款分类Id.value
-    }
-    if (!form.categoryId) return message.warning('请选择分类')
-    if (!form.amount || form.amount <= 0) return message.warning('请输入正确的金额')
-    if (需要选择信用卡.value && !form.debtId) return message.warning('请选择信用卡账户')
+  try {
+    if (editingId.value && 仅可编辑备注日期成员.value) {
+      await finance.更新交易(editingId.value, {
+        date: form.date,
+        note: form.note,
+        person: form.person,
+        assetId: form.paymentMethod === 'credit_card' ? null : form.assetId
+      })
+    } else {
+      if (form.paymentMethod === 'credit_repayment' && 还款分类Id.value) {
+        form.categoryId = 还款分类Id.value
+      }
+      if (!form.categoryId) return message.warning('请选择分类')
+      if (!form.amount || form.amount <= 0) return message.warning('请输入正确的金额')
+      if (需要选择信用卡.value && !form.debtId) return message.warning('请选择信用额度账户')
 
-    const payload = {
-      amount: Number(form.amount),
-      type: form.type,
-      paymentMethod: form.paymentMethod,
-      date: form.date,
-      note: form.note,
-      person: form.person,
-      categoryId: form.categoryId,
-      debtId: 需要选择信用卡.value ? form.debtId : null,
-      assetId: form.paymentMethod === 'credit_card' ? null : form.assetId
+      const payload = {
+        amount: Number(form.amount),
+        type: form.type,
+        paymentMethod: form.paymentMethod,
+        date: form.date,
+        note: form.note,
+        person: form.person,
+        categoryId: form.categoryId,
+        debtId: 需要选择信用卡.value ? form.debtId : null,
+        assetId: form.paymentMethod === 'credit_card' ? null : form.assetId
+      }
+
+      if (editingId.value) await finance.更新交易(editingId.value, payload)
+      else await finance.新增交易(payload)
     }
 
-    if (editingId.value) await finance.更新交易(editingId.value, payload)
-    else await finance.新增交易(payload)
+    message.success('保存成功')
+    modalOpen.value = false
+    editingId.value = null
+    editingRecord.value = null
+    form.amount = null
+    form.note = ''
+    form.categoryId = null
+    form.debtId = null
+    form.assetId = null
+    form.paymentMethod = 'cash'
+    form.person = ''
+  } catch (err) {
+    message.error(获取接口错误(err))
   }
-
-  message.success('保存成功')
-  modalOpen.value = false
-  editingId.value = null
-  editingRecord.value = null
-  form.amount = null
-  form.note = ''
-  form.categoryId = null
-  form.debtId = null
-  form.assetId = null
-  form.paymentMethod = 'cash'
-  form.person = ''
 }
 
 async function 删除(id: number) {
-  await finance.删除交易(id)
-  message.success('删除成功')
+  try {
+    await finance.删除交易(id)
+    message.success('删除成功')
+  } catch (err) {
+    message.error(获取接口错误(err))
+  }
 }
 </script>

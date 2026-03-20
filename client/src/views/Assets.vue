@@ -126,28 +126,42 @@ function 打开编辑(record: 资产账户) {
 }
 
 async function 提交() {
-  if (!form.name.trim()) return message.warning('请输入账户名称')
-  if (editingId.value) {
-    await assetsStore.更新资产(editingId.value, {
-      name: form.name,
-      type: form.type,
-      balance: form.balance,
-      note: form.note
-    })
-  } else {
-    await assetsStore.新增资产({
-      name: form.name,
-      type: form.type,
-      balance: form.balance,
-      note: form.note
-    })
+  const eMsg = (err: unknown) => {
+    const e: any = err
+    return String(e?.response?.data?.error ?? e?.response?.data?.message ?? e?.message ?? '操作失败')
   }
-  message.success('保存成功')
-  modalOpen.value = false
+
+  if (!form.name.trim()) return message.warning('请输入账户名称')
+  try {
+    if (editingId.value) {
+      await assetsStore.更新资产(editingId.value, {
+        name: form.name,
+        type: form.type,
+        balance: form.balance,
+        note: form.note
+      })
+    } else {
+      await assetsStore.新增资产({
+        name: form.name,
+        type: form.type,
+        balance: form.balance,
+        note: form.note
+      })
+    }
+    message.success('保存成功')
+    modalOpen.value = false
+  } catch (err) {
+    message.error(eMsg(err))
+  }
 }
 
 async function 删除(id: number) {
-  await assetsStore.删除资产(id)
-  message.success('删除成功')
+  try {
+    await assetsStore.删除资产(id)
+    message.success('删除成功')
+  } catch (err) {
+    const e: any = err
+    message.error(String(e?.response?.data?.error ?? e?.response?.data?.message ?? e?.message ?? '删除失败'))
+  }
 }
 </script>

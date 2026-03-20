@@ -25,6 +25,9 @@
           <template v-if="column.dataIndex === 'balance'">
             <span class="text-red-600 font-bold">{{ Number(record.balance).toFixed(2) }}</span>
           </template>
+          <template v-else-if="column.dataIndex === 'type'">
+            <a-tag color="purple">{{ debtTypeLabel(record.type) }}</a-tag>
+          </template>
           <template v-else-if="column.dataIndex === 'updatedAt'">
             {{ formatDateTime(record.updatedAt) }}
           </template>
@@ -80,7 +83,8 @@
         </a-form-item>
         <a-form-item label="类型">
           <a-select v-model:value="debtForm.type">
-            <a-select-option value="credit_card">信用卡</a-select-option>
+            <a-select-option value="credit_card">信用卡（通用）</a-select-option>
+            <a-select-option value="credit_line">消费信贷（花呗/白条/月付）</a-select-option>
             <a-select-option value="loan">借款/贷款</a-select-option>
             <a-select-option value="other">其他</a-select-option>
           </a-select>
@@ -133,6 +137,16 @@ import type { 负债 } from '@/types/api'
 import { formatDateTime } from '@/utils/datetime'
 
 const debtsStore = useDebtsStore()
+
+function debtTypeLabel(t: string) {
+  if (t === 'credit_card') return '信用卡'
+  if (t === 'credit_line') return '消费信贷'
+  if (t === 'huabei') return '消费信贷'
+  if (t === 'baitiao') return '消费信贷'
+  if (t === 'loan') return '借款/贷款'
+  if (t === 'other') return '其他'
+  return t
+}
 
 const debtColumns = [
   { title: '名称', dataIndex: 'name', key: 'name' },
@@ -256,4 +270,3 @@ onMounted(async () => {
   await debtsStore.拉取负债()
 })
 </script>
-
