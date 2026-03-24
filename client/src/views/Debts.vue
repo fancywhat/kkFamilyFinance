@@ -5,22 +5,28 @@
         <h1 class="text-2xl font-bold m-0">家庭负债</h1>
         <p class="text-gray-500 mt-1">记录信用卡、借款等负债，并维护还款流水</p>
       </div>
-      <a-button type="primary" @click="openDebtModal">
-        <template #icon><plus-outlined /></template>
-        新增负债
-      </a-button>
+      <div class="flex items-center gap-2">
+        <a-select v-model:value="personFilter" style="width: 160px" placeholder="按成员筛选">
+          <a-select-option value="">全部成员</a-select-option>
+          <a-select-option v-for="p in 可选成员" :key="p" :value="p">{{ p }}</a-select-option>
+        </a-select>
+        <a-button type="primary" @click="openDebtModal">
+          <template #icon><plus-outlined /></template>
+          新增负债
+        </a-button>
+      </div>
     </div>
 
     <a-row :gutter="16">
       <a-col :xs="24" :md="8">
         <a-card class="shadow-sm" title="当前总负债">
-          <a-statistic :value="debtsStore.总负债" :precision="2" suffix="元" :value-style="{ color: '#ff4d4f' }" />
+          <a-statistic :value="总负债展示" :precision="2" suffix="元" :value-style="{ color: '#ff4d4f' }" />
         </a-card>
       </a-col>
     </a-row>
 
     <a-card class="shadow-sm" title="负债列表">
-      <a-table :columns="debtColumns" :data-source="debtsStore.debts" row-key="id">
+      <a-table :columns="debtColumns" :data-source="过滤后负债" row-key="id">
         <template #bodyCell="{ column, record }">
           <template v-if="column.dataIndex === 'balance'">
             <span class="text-red-600 font-bold">{{ Number(record.balance).toFixed(2) }}</span>
@@ -39,7 +45,7 @@
           </template>
         </template>
       </a-table>
-      <div v-if="debtsStore.debts.length === 0" class="text-center text-gray-400 py-8">暂无负债记录</div>
+      <div v-if="过滤后负债.length === 0" class="text-center text-gray-400 py-8">暂无负债记录</div>
     </a-card>
 
     <a-drawer v-model:open="recordsOpen" width="720" title="负债流水" placement="right">
@@ -137,6 +143,23 @@ import type { 负债 } from '@/types/api'
 import { formatDateTime } from '@/utils/datetime'
 
 const debtsStore = useDebtsStore()
+const personFilter = ref('')
+
+const 可选成员 = computed(() => {
+  const set = new Set<string>()
+  for (const d of debtsStore.debts) {
+    if (d.person) set.add(d.person)
+  }
+  return [...set.values()]
+})
+
+const 过滤后负债 = computed(() => {
+  const p = personFilter.value
+  if (!p) return debtsStore.debts
+  return debtsStore.debts.filter((d) => d.person === p || d.person === null)
+})
+
+const 总负债展示 = computed(() => 过滤后负债.value.reduce((sum, d) => sum + (Number(d.balance) || 0), 0))
 
 function debtTypeLabel(t: string) {
   if (t === 'credit_card') return '信用卡'

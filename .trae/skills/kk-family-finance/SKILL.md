@@ -106,6 +106,7 @@ curl -sS "$FINANCE_BASE_URL/api/debts"
 
 - 如果命中“花呗/白条/抖音月付/美团月付”：优先 `type="credit_line"`，并按 name 进一步匹配“花呗/白条/抖音/月付/美团”等
 - 如果命中“信用卡”：优先 `type="credit_card"`，并按 name 进一步匹配“招商/浦发/中信”等
+ - 如果识别到了成员（person=kk/y）：优先匹配同成员的账户（debt.person=kk/y）；匹配不到再考虑 person 为空的“共享账户”
 
 ### 获取可用资产账户（assetId，可选）
 

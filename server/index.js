@@ -668,7 +668,58 @@ app.post('/api/transactions', async (req, res) => {
         if (!debt) throw new Error('DEBT_NOT_FOUND')
         if (!['credit_card', 'credit_line', 'huabei', 'baitiao'].includes(debt.type))
           throw new Error('DEBT_TYPE_INVALID')
+        if (person && debt.person && debt.person !== String(person)) throw new Error('DEBT_PERSON_MISMATCH')
       }
+
+      let effectiveAssetId = null
+      if (method !== 'credit_card') {
+        if (reqAssetId) {
+          const a = await tx.asset.findUnique({ where: { id: reqAssetId }, select: { id: true } })
+          if (!a) throw new Error('ASSET_NOT_FOUND')
+          effectiveAssetId = a.id
+        } else {
+          effectiveAssetId = await resolveDefaultAssetId(tx, method)
+        }
+      }
+
+      const createdTx = await tx.transaction.create({
+        data: {
+          amount: txAmount,
+          type,
+          paymentMethod: method,
+          date: txDate,
+          note: note || null,
+          person: person || null,
+          categoryId: Number(categoryId),
+          debtId: debt ? debt.id : null,
+          assetId: effectiveAssetId
+        },
+        include: { category: true, debt: true, asset: true }
+      })
+
+      if (effectiveAssetId) {
+        await applyAssetDelta(tx, effectiveAssetId, calcAssetDelta({ type, amount: txAmount }))
+      }
+
+      if (debt) {
+        const recordType = method === 'credit_card' ? 'borrow' : 'repay'
+        const nextBalance =
+          recordType === 'borrow' ? debt.balance + txAmount : debt.balance - txAmount
+
+        await tx.debtRecord.create({
+          data: {
+            debtId: debt.id,
+            type: recordType,
+            amount: txAmount,
+            date: txDate,
+            note: note || null,
+            transactionId: createdTx.id
+          }
+        })
+        await tx.debt.update({ where: { id: debt.id }, data: { balance: nextBalance } })
+      }
+
+      return createdTx
     })
 
     res.status(201).json(created)
@@ -677,6 +728,8 @@ app.post('/api/transactions', async (req, res) => {
     if (msg === 'DEBT_NOT_FOUND') return res.status(404).json({ error: '信用卡账户不存在' })
     if (msg === 'DEBT_TYPE_INVALID')
       return res.status(400).json({ error: '所选负债不是信用卡类型' })
+    if (msg === 'DEBT_PERSON_MISMATCH')
+      return res.status(400).json({ error: '所选信用额度账户不属于该成员' })
     if (msg === 'ASSET_NOT_FOUND') return res.status(404).json({ error: '资产账户不存在' })
     return res.status(500).json({ error: '服务器错误' })
   }
@@ -786,6 +839,7 @@ app.put('/api/transactions/:id', async (req, res) => {
         if (!debt) throw new Error('DEBT_NOT_FOUND')
         if (!['credit_card', 'credit_line', 'huabei', 'baitiao'].includes(debt.type))
           throw new Error('DEBT_TYPE_INVALID')
+        if (nextPerson && debt.person && debt.person !== nextPerson) throw new Error('DEBT_PERSON_MISMATCH')
 
         if (nextPaymentMethod === 'credit_card') {
           effectiveAssetId = null
@@ -883,13 +937,17 @@ app.put('/api/transactions/:id', async (req, res) => {
     if (msg === 'DEBT_NOT_FOUND') return res.status(404).json({ error: '信用卡账户不存在' })
     if (msg === 'DEBT_TYPE_INVALID')
       return res.status(400).json({ error: '所选负债不是信用卡类型' })
+    if (msg === 'DEBT_PERSON_MISMATCH')
+      return res.status(400).json({ error: '所选信用额度账户不属于该成员' })
     if (msg === 'ASSET_NOT_FOUND') return res.status(404).json({ error: '资产账户不存在' })
     return res.status(500).json({ error: '服务器错误' })
   }
 })
 
-app.get('/api/debts', async (_req, res) => {
+app.get('/api/debts', async (req, res) => {
+  const person = req.query.person ? String(req.query.person) : ''
   const debts = await prisma.debt.findMany({
+    where: person ? { OR: [{ person }, { person: null }] } : undefined,
     orderBy: { updatedAt: 'desc' }
   })
   res.json(debts)

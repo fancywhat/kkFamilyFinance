@@ -136,7 +136,7 @@
                 <a-button type="link" size="small" @click="去配置信用卡">去家庭负债创建</a-button>
               </div>
             </template>
-            <a-select-option v-for="d in debtsStore.信用额度列表" :key="d.id" :value="d.id">
+            <a-select-option v-for="d in 可选信用额度账户" :key="d.id" :value="d.id">
               {{ d.name }}
             </a-select-option>
           </a-select>
@@ -222,6 +222,11 @@ const 还款分类Id = computed(() => {
 const 需要选择信用卡 = computed(
   () => form.paymentMethod === 'credit_card' || form.paymentMethod === 'credit_repayment'
 )
+
+const 可选信用额度账户 = computed(() => {
+  const p = form.person.trim()
+  return debtsStore.信用额度列表.filter((d) => !d.person || !p || d.person === p)
+})
 const 仅可编辑备注日期成员 = computed(() => {
   if (!editingRecord.value) return false
   return (
@@ -299,6 +304,13 @@ onMounted(async () => {
 
 async function 提交() {
   try {
+    if (需要选择信用卡.value && form.person.trim() && form.debtId) {
+      const selected = debtsStore.信用额度列表.find((d) => d.id === form.debtId)
+      if (selected?.person && selected.person !== form.person.trim()) {
+        return message.warning('所选信用额度账户不属于该成员')
+      }
+    }
+
     if (editingId.value && 仅可编辑备注日期成员.value) {
       await finance.更新交易(editingId.value, {
         date: form.date,
